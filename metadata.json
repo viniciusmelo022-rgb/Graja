@@ -1,0 +1,10 @@
+{
+  "name": "Remix: GrajaFood",
+  "description": "Delivery de comida exclusivo para a região do Grajaú, SP. Conectando restaurantes locais e moradores.",
+  "requestFramePermissions": [
+    "geolocation"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
