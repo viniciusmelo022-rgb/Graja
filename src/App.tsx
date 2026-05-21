@@ -22,9 +22,16 @@ import {
   Trophy,
   LayoutDashboard,
   Home,
-  Heart
+  Heart,
+  Users,
+  Sparkles,
+  Send,
+  Bot,
+  HardDrive
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { GrajaFoodLogo } from './components/GrajaFoodLogo';
+import DriveIntegration from './components/DriveIntegration';
 
 // Types
 interface Product {
@@ -76,17 +83,41 @@ interface UserAdmin {
   permissoes?: Record<string, string[]>;
 }
 
-// Views: 'home' | 'restaurant' | 'cart' | 'auth' | 'history' | 'dashboard' | 'addresses' | 'profile' | 'delivery' | 'management' | 'accept_invite'
-type AppView = 'home' | 'restaurant' | 'cart' | 'auth' | 'history' | 'dashboard' | 'addresses' | 'profile' | 'delivery' | 'management' | 'accept_invite';
+// Views: 'home' | 'restaurant' | 'cart' | 'auth' | 'history' | 'dashboard' | 'addresses' | 'profile' | 'delivery' | 'management' | 'accept_invite' | 'drive'
+type AppView = 'home' | 'restaurant' | 'cart' | 'auth' | 'history' | 'dashboard' | 'addresses' | 'profile' | 'delivery' | 'management' | 'accept_invite' | 'drive';
 
 export default function App() {
-  const [view, setView] = useState<AppView>('home');
+  const [user, setUser] = useState<any>(() => {
+    const stored = localStorage.getItem('user');
+    if (stored) {
+      try { return JSON.parse(stored); } catch { return null; }
+    }
+    return null;
+  });
+
+  const [view, setView] = useState<AppView>(() => {
+    const urlParams = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '');
+    if (urlParams.get('convite')) return 'accept_invite';
+
+    const storedUser = localStorage.getItem('user');
+    if (storedUser) {
+      try {
+        const u = JSON.parse(storedUser);
+        if (u.tipo === 'entregador') return 'delivery';
+        if (['admin', 'dono_master', 'operador', 'financeiro', 'suporte'].includes(u.tipo)) return 'dashboard';
+        return 'home';
+      } catch {
+        return 'auth';
+      }
+    }
+    return 'auth';
+  });
+
   const [restaurants, setRestaurants] = useState<Restaurant[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [selectedRest, setSelectedRest] = useState<Restaurant | null>(null);
   const [cart, setCart] = useState<CartItem[]>([]);
-  const [user, setUser] = useState<any>(null);
   const [orders, setOrders] = useState<Order[]>([]);
   const [addresses, setAddresses] = useState<any[]>([]);
   const [stats, setStats] = useState<any>(null);
@@ -107,6 +138,54 @@ export default function App() {
   const [phone, setPhone] = useState('');
   const [newAddr, setNewAddr] = useState({ logradouro: '', numero: '', bairro: '', complemento: '' });
 
+  // Chatbot states
+  const [showChatbot, setShowChatbot] = useState(false);
+  const [chatbotInput, setChatbotInput] = useState('');
+  const [chatbotMessages, setChatbotMessages] = useState<Array<{ sender: 'user' | 'ai', text: string }>>([
+    { sender: 'ai', text: 'Salve! Sou o Assistente de IA do GrajaFood, mestre. Sou um agente 100% íntegro e estou aqui pra tirar suas dúvidas sobre restaurantes parceiros (Graja Burger, Pizzaria São José), taxas de entrega ou o aplicativo exclusivo para o entregador/motoboy! Como posso ajudar você?' }
+  ]);
+  const [chatbotLoading, setChatbotLoading] = useState(false);
+
+  const sendChatbotMessage = async (textToSend?: string) => {
+    const rawText = textToSend || chatbotInput;
+    if (!rawText.trim() || chatbotLoading) return;
+
+    const userMessage = { sender: 'user' as const, text: rawText };
+    setChatbotMessages(prev => [...prev, userMessage]);
+    if (!textToSend) setChatbotInput('');
+    setChatbotLoading(true);
+
+    try {
+      const historyPayload = chatbotMessages.map(m => ({
+        role: m.sender === 'ai' ? 'model' as const : 'user' as const,
+        message: m.text
+      }));
+
+      const res = await fetch('/api/chatbot', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          message: rawText,
+          history: historyPayload
+        })
+      });
+
+      if (!res.ok) {
+        throw new Error('Falha na resposta do servidor');
+      }
+
+      const data = await res.json();
+      setChatbotMessages(prev => [...prev, { sender: 'ai', text: data.text }]);
+    } catch (error) {
+      console.error("Erro no chatbot:", error);
+      setChatbotMessages(prev => [...prev, { sender: 'ai', text: 'Ops, tive um probleminha de conexão, mestre! Mas minha integridade segue 100%. Tenta mandar de novo em um instante.' }]);
+    } finally {
+      setChatbotLoading(false);
+    }
+  };
+
   useEffect(() => {
     fetchRestaurants();
     const urlParams = new URLSearchParams(window.location.search);
@@ -116,16 +195,14 @@ export default function App() {
       setView('accept_invite');
     }
 
-    const storedUser = localStorage.getItem('user');
-    if (storedUser) {
-      const u = JSON.parse(storedUser);
-      setUser(u);
+    if (user) {
       fetchAddresses();
-      if (u.tipo === 'admin' || u.tipo === 'dono_master') fetchStatusData(u);
-      if (u.tipo === 'entregador') {
-        setView('delivery');
+      if (user.tipo === 'admin' || user.tipo === 'dono_master') fetchStatusData(user);
+      if (user.tipo === 'entregador') {
         fetchOrders();
       }
+    } else {
+      setView('auth');
     }
   }, []);
 
@@ -268,12 +345,17 @@ export default function App() {
         localStorage.setItem('user', JSON.stringify(data.usuario));
         setUser(data.usuario);
         
-        if (data.usuario.tipo === 'entregador') setView('delivery');
-        else if (['admin', 'dono_master', 'operador', 'financeiro', 'suporte'].includes(data.usuario.tipo)) setView('dashboard');
-        else setView('home');
+        if (data.usuario.tipo === 'entregador') {
+          setView('delivery');
+        } else if (['admin', 'dono_master', 'operador', 'financeiro', 'suporte'].includes(data.usuario.tipo)) {
+          setView('dashboard');
+          fetchStatusData(data.usuario);
+        } else {
+          setView('home');
+        }
 
         fetchAddresses();
-        if (data.usuario.tipo === 'admin' || data.usuario.tipo === 'restaurante') fetchStats();
+        if (data.usuario.tipo === 'restaurante') fetchStats();
       } else {
         alert(data.erro || 'Erro na autenticação');
       }
@@ -286,7 +368,7 @@ export default function App() {
     localStorage.removeItem('token');
     localStorage.removeItem('user');
     setUser(null);
-    setView('home');
+    setView('auth');
   };
 
   const selectRestaurant = async (rest: Restaurant) => {
@@ -323,7 +405,7 @@ export default function App() {
       return;
     }
     const token = localStorage.getItem('token');
-    const mainAddr = addresses.find(a => a.principal) || addresses[0];
+    const mainAddr = addresses.find(a => a.principal) || (addresses.length > 0 ? addresses[0] : null);
     const orderData = {
       restaurante_id: selectedRest?.id,
       itens: cart,
@@ -406,18 +488,15 @@ export default function App() {
   return (
     <div className="min-h-screen bg-[#FDFDFD] font-sans text-neutral-900 pb-20 md:pb-0">
       {/* Top Navigation */}
-      <nav className="sticky top-0 z-40 bg-white/95 backdrop-blur-xl border-b border-neutral-100">
+      {user && (
+        <nav className="sticky top-0 z-40 bg-white/95 backdrop-blur-xl border-b border-neutral-100">
         <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
           <div className="flex items-center gap-2 cursor-pointer group" onClick={() => setView(user?.tipo === 'entregador' ? 'delivery' : 'home')}>
-             <div className="bg-sky-500 p-2 rounded-xl shadow-lg rotate-3 group-hover:rotate-0 transition-transform">
-               <ShoppingBag className="w-5 h-5 text-white" />
-             </div>
-             <div className="bg-sky-500 px-4 py-1.5 rounded-2xl shadow-sm rotate-[-1deg] group-hover:rotate-0 transition-transform">
-                <span className="text-xl font-black tracking-tighter text-white italic">
-                  {user?.tipo === 'entregador' ? 'ENTREGADOR ' : 'GRAJA'}
-                  <span className={user?.tipo === 'entregador' ? 'text-white' : 'text-white/80'}>{user?.tipo === 'entregador' ? 'FOOD' : 'FOOD'}</span>
-                </span>
-             </div>
+             <GrajaFoodLogo 
+               size="md" 
+               variant={user?.tipo === 'entregador' ? 'delivery' : 'full'} 
+               className="hover:scale-102 transition-transform duration-300"
+             />
           </div>
 
           <div className="hidden md:flex items-center gap-4">
@@ -430,15 +509,33 @@ export default function App() {
             </button>
             <div className="h-6 w-[1px] bg-neutral-200" />
             {user ? (
-               <button onClick={() => setView('profile')} className="flex items-center gap-2 group">
-                  <div className="text-right">
-                     <p className="text-[10px] font-black text-neutral-400 leading-none mb-0.5">{user.nivel?.toUpperCase()}</p>
-                     <p className="text-xs font-bold leading-none">{user.nome.split(' ')[0]}</p>
-                  </div>
-                  <div className="w-10 h-10 bg-neutral-100 rounded-full flex items-center justify-center border-2 border-white shadow-sm overflow-hidden group-hover:border-sky-500 transition-colors">
-                     <User className="w-5 h-5 text-neutral-400" />
-                  </div>
-               </button>
+               <>
+                  {['admin', 'dono_master', 'operador', 'financeiro', 'suporte', 'restaurante'].includes(user.tipo) && (
+                     <button 
+                       onClick={() => { setView('dashboard'); fetchStats(); }}
+                       className={`text-[9px] font-black px-3.5 py-2 rounded-xl transition-all mr-2 ${view === 'dashboard' ? 'bg-sky-500 text-white shadow-lg shadow-sky-500/20' : 'bg-neutral-50 text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900'}`}
+                     >
+                       PAINEL ADM
+                     </button>
+                  )}
+                  {user.tipo === 'dono_master' && (
+                     <button 
+                       onClick={() => { setView('management'); fetchUsersAdmin(); }}
+                       className={`text-[9px] font-black px-3.5 py-2 rounded-xl transition-all mr-2 ${view === 'management' ? 'bg-neutral-900 text-white shadow-lg' : 'bg-neutral-50 text-neutral-500 hover:bg-neutral-100 hover:text-neutral-900'}`}
+                     >
+                       USUÁRIOS
+                     </button>
+                  )}
+                  <button onClick={() => setView('profile')} className="flex items-center gap-2 group">
+                     <div className="text-right">
+                        <p className="text-[10px] font-black text-neutral-400 leading-none mb-0.5">{user.nivel?.toUpperCase()}</p>
+                        <p className="text-xs font-bold leading-none">{user.nome.split(' ')[0]}</p>
+                     </div>
+                     <div className="w-10 h-10 bg-neutral-100 rounded-full flex items-center justify-center border-2 border-white shadow-sm overflow-hidden group-hover:border-sky-500 transition-colors">
+                        <User className="w-5 h-5 text-neutral-400" />
+                     </div>
+                  </button>
+               </>
             ) : (
               <button 
                 onClick={() => setView('auth')}
@@ -464,6 +561,7 @@ export default function App() {
           </div>
         </div>
       </nav>
+      )}
 
       <AnimatePresence mode="wait">
         {/* --- HOME VIEW --- */}
@@ -477,14 +575,17 @@ export default function App() {
               <div className="max-w-7xl mx-auto px-4 text-center relative z-10">
                 <motion.div 
                    initial={{ scale: 0.9, opacity: 0 }} animate={{ scale: 1, opacity: 1 }}
-                   className="inline-flex items-center gap-2 bg-sky-50 text-sky-600 px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest mb-6"
+                   className="flex justify-center mb-6"
                 >
-                  <Trophy className="w-3.5 h-3.5" /> 
-                  O Delivery Oficial do Grajaú
+                   <GrajaFoodLogo 
+                     size="md" 
+                     variant="full" 
+                     className="hover:scale-105 transition-transform duration-300 bg-neutral-50/50 px-5 py-2.5 rounded-[1.5rem] border border-neutral-100/80 shadow-sm"
+                   />
                 </motion.div>
                 
-                <h1 className="text-5xl md:text-8xl font-black tracking-tighter mb-6 uppercase leading-[0.85] text-neutral-900">
-                   FOME DE <span className="text-sky-500">QUÊ</span> NO FUNDÃO?
+                <h1 className="text-3xl md:text-5xl font-black tracking-tighter mb-4 uppercase text-neutral-900">
+                   DELIVERY DO <span className="text-sky-500">GRAJAÚ</span>
                 </h1>
                 
                 <div className="relative max-w-2xl mx-auto mt-12 group">
@@ -503,9 +604,9 @@ export default function App() {
             <main className="max-w-7xl mx-auto px-4 py-12 pb-32">
               <div className="flex items-center justify-between mb-10">
                 <h2 className="text-3xl font-black uppercase tracking-tighter italic">RESTAURANTES</h2>
-                {user && (user.tipo === 'admin' || user.tipo === 'restaurante') && (
-                  <button onClick={() => { setView('dashboard'); fetchStats(); }} className="flex items-center gap-2 text-[10px] font-black bg-sky-500 text-white px-4 py-2 rounded-xl shadow-lg">
-                    DASHBOARD <ChevronRight className="w-4 h-4" />
+                {user && ['admin', 'dono_master', 'operador', 'financeiro', 'suporte', 'restaurante'].includes(user.tipo) && (
+                  <button onClick={() => { setView('dashboard'); fetchStats(); }} className="flex items-center gap-2 text-[10px] font-black bg-sky-500 text-white px-4 py-2 rounded-xl shadow-lg hover:bg-neutral-900 transition-all">
+                    PAINEL ADM <ChevronRight className="w-4 h-4" />
                   </button>
                 )}
               </div>
@@ -656,10 +757,13 @@ export default function App() {
                    <div className="w-16 h-16 bg-sky-500 rounded-3xl flex items-center justify-center shadow-xl shadow-sky-500/20 rotate-3">
                       <MapPin className="w-8 h-8 text-white" />
                    </div>
-                   <div className="flex-1">
+                    <div className="flex-1">
                       <p className="text-xs font-black text-neutral-300 uppercase tracking-widest mb-1">LOCAL DE ENTREGA</p>
                       <p className="text-xl font-black uppercase tracking-tight italic">
-                        {addresses.find(a => a.principal)?.logradouro ? `${addresses.find(a => a.principal).logradouro}, ${addresses.find(a => a.principal).numero}` : 'DEFINIR ENDEREÇO'}
+                        {(() => {
+                          const main = addresses.find(a => a.principal);
+                          return main ? `${main.logradouro}, ${main.numero}` : 'DEFINIR ENDEREÇO';
+                        })()}
                       </p>
                    </div>
                 </div>
@@ -684,7 +788,7 @@ export default function App() {
                        <User className="w-12 h-12 text-sky-500" />
                     </div>
                     <div className="absolute -bottom-2 -right-2 bg-sky-500 text-white px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-widest shadow-xl border-2 border-white">
-                       {user.nivel}
+                       {user.nivel || (user.tipo === 'dono_master' ? 'DONO MASTER' : user.tipo?.toUpperCase() || 'CLIENTE')}
                     </div>
                  </div>
                  <h1 className="text-4xl font-black uppercase tracking-tighter italic">{user.nome}</h1>
@@ -699,11 +803,24 @@ export default function App() {
               </div>
 
               <div className="space-y-4">
+                  {['admin', 'dono_master', 'operador', 'financeiro', 'suporte', 'restaurante'].includes(user.tipo) && (
+                     <button onClick={() => { setView('dashboard'); fetchStats(); }} className="w-full flex items-center justify-between p-6 bg-sky-500 text-white rounded-3xl transition-colors font-black uppercase tracking-widest text-xs shadow-lg shadow-sky-500/20">
+                        Painel Administrativo <LayoutDashboard className="w-5 h-5 text-white" />
+                     </button>
+                  )}
+                  {user.tipo === 'dono_master' && (
+                     <button onClick={() => { setView('management'); fetchUsersAdmin(); }} className="w-full flex items-center justify-between p-6 bg-neutral-900 text-white rounded-3xl transition-colors font-black uppercase tracking-widest text-xs shadow-lg">
+                        Gestão de Usuários <Users className="w-5 h-5 text-sky-400" />
+                     </button>
+                  )}
                  <button onClick={() => { setView('history'); fetchOrders(); }} className="w-full flex items-center justify-between p-6 bg-white rounded-3xl border border-neutral-100 transition-colors font-black uppercase tracking-widest text-xs shadow-sm">
                     Histórico <History className="w-5 h-5 text-sky-500" />
                  </button>
                  <button onClick={() => { setView('addresses'); fetchAddresses(); }} className="w-full flex items-center justify-between p-6 bg-white rounded-3xl border border-neutral-100 transition-colors font-black uppercase tracking-widest text-xs shadow-sm">
                     Endereços <MapPin className="w-5 h-5 text-sky-500" />
+                 </button>
+                 <button onClick={() => { setView('drive'); if (user && ['admin', 'dono_master', 'restaurante'].includes(user.tipo)) fetchStats(); if (user && user.tipo === 'dono_master') fetchUsersAdmin(); }} className="w-full flex items-center justify-between p-6 bg-white rounded-3xl border border-neutral-100 hover:border-sky-300 transition-colors font-black uppercase tracking-widest text-xs shadow-sm">
+                    Backup Google Drive <HardDrive className="w-5 h-5 text-sky-500" />
                  </button>
                  <button onClick={logout} className="w-full flex items-center justify-between p-6 bg-red-50 text-red-600 rounded-3xl font-black uppercase tracking-widest text-xs mt-12">
                     Sair <LogOut className="w-5 h-5" />
@@ -717,6 +834,12 @@ export default function App() {
            <motion.div key="management" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="max-w-6xl mx-auto px-4 py-20 pb-40">
               <div className="flex items-center justify-between mb-12">
                  <h1 className="text-5xl font-black uppercase tracking-tighter italic">GESTÃO DE USUÁRIOS</h1>
+                 {user?.tipo === 'dono_master' && (
+                    <div className="flex gap-3 bg-neutral-100 p-1.5 rounded-2xl mt-4 max-w-xs">
+                       <button onClick={() => { setView('dashboard'); fetchStats(); }} className="px-4 py-2 rounded-xl text-[10px] font-black uppercase text-neutral-500 hover:text-neutral-900 transition-all">DASHBOARD</button>
+                       <button onClick={() => { setView('management'); fetchUsersAdmin(); }} className="px-4 py-2 rounded-xl text-[10px] font-black uppercase bg-white text-sky-600 shadow-sm transition-all">USUÁRIOS</button>
+                    </div>
+                 )}
                  <button onClick={fetchUsersAdmin} className="text-xs font-black bg-neutral-100 px-4 py-2 rounded-xl">ATUALIZAR</button>
               </div>
 
@@ -839,7 +962,7 @@ export default function App() {
                        <Bike className="w-12 h-12 text-neutral-100 mx-auto mb-4" />
                        <p className="text-neutral-300 font-black uppercase text-[10px] tracking-widest">Aguardando novos pedidos...</p>
                     </div>
-                 ) : (
+             ) : (
                     orders.filter(o => o.status === 'recebido' || o.status === 'preparando').map(order => (
                        <div key={order.id} className="bg-white p-8 rounded-[3rem] border border-neutral-100 shadow-sm">
                           <div className="flex justify-between items-start mb-6">
@@ -904,7 +1027,15 @@ export default function App() {
         {/* --- DASHBOARD VIEW --- */}
         {view === 'dashboard' && stats && (
            <motion.div key="dashboard" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="max-w-6xl mx-auto px-4 py-20 pb-40">
-              <h1 className="text-6xl font-black uppercase tracking-tighter italic mb-12">DASHBOARD</h1>
+              <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-6 mb-12 border-b border-neutral-100 pb-8">
+                  <h1 className="text-6xl font-black uppercase tracking-tighter italic">DASHBOARD</h1>
+                  {user?.tipo === 'dono_master' && (
+                     <div className="flex gap-3 bg-neutral-100 p-1.5 rounded-2xl">
+                        <button onClick={() => { setView('dashboard'); fetchStats(); }} className="px-5 py-2.5 rounded-xl text-xs font-black uppercase bg-white text-sky-600 shadow-sm transition-all">DASHBOARD</button>
+                        <button onClick={() => { setView('management'); fetchUsersAdmin(); }} className="px-5 py-2.5 rounded-xl text-xs font-black uppercase text-neutral-500 hover:text-neutral-900 transition-all">USUÁRIOS</button>
+                     </div>
+                  )}
+               </div>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-8 mb-12">
                   <div className="bg-white p-10 rounded-[4rem] border border-neutral-100 shadow-sm">
                      <p className="text-[10px] font-black text-neutral-400 uppercase tracking-widest mb-4">PEDIDOS</p>
@@ -912,7 +1043,7 @@ export default function App() {
                   </div>
                   <div className="bg-white p-10 rounded-[4rem] border border-neutral-100 shadow-sm">
                      <p className="text-[10px] font-black text-neutral-400 uppercase tracking-widest mb-4">FATURAMENTO</p>
-                     <p className="text-5xl font-black text-green-600">R$ {stats.faturamento.toFixed(2)}</p>
+                     <p className="text-5xl font-black text-green-600">R$ {typeof stats.faturamento === 'number' ? stats.faturamento.toFixed(2) : '0.00'}</p>
                   </div>
                   <div className="bg-white p-10 rounded-[4rem] border border-neutral-100 shadow-sm">
                      <p className="text-[10px] font-black text-neutral-400 uppercase tracking-widest mb-4">MEMBROS</p>
@@ -970,9 +1101,12 @@ export default function App() {
 
         {/* --- AUTH VIEW --- */}
         {view === 'auth' && (
-          <motion.div key="auth" initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="max-w-md mx-auto px-4 py-24 pb-40">
+          <motion.div key="auth" initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="max-w-md mx-auto px-4 py-12 pb-40">
             <div className="bg-white p-12 rounded-[5rem] border border-neutral-100 shadow-2xl relative overflow-hidden text-center">
               <div className="absolute top-0 left-0 w-full h-2 bg-sky-500" />
+              <div className="flex justify-center mb-8">
+                 <GrajaFoodLogo size="md" variant="logo-only" />
+              </div>
               <h2 className="text-4xl font-black uppercase tracking-tighter italic mb-3">{authMode === 'login' ? 'LOGIN' : 'CADASTRO'}</h2>
               <form onSubmit={handleAuth} className="space-y-4">
                 {authMode === 'register' && <input type="text" placeholder="NOME" required value={name} onChange={(e) => setName(e.target.value)} className="w-full p-5 bg-neutral-50 rounded-[2rem] border-none font-bold" />}
@@ -982,11 +1116,51 @@ export default function App() {
               </form>
               <button onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')} className="w-full mt-10 text-[10px] font-black text-neutral-400 hover:text-sky-500 uppercase tracking-widest">{authMode === 'login' ? 'NOVO POR AQUI?' : 'JÁ SOU DA CASA'}</button>
             </div>
+
+            {/* Test Credentials Card */}
+            <div className="mt-8 bg-white p-8 rounded-[3.5rem] border border-neutral-100 shadow-sm text-center">
+              <p className="text-[10px] font-black text-neutral-400 uppercase tracking-widest mb-4 flex items-center justify-center gap-1.5">
+                <span>🔑</span> CONTAS PARA TESTE
+              </p>
+              <div className="space-y-3 font-bold">
+                <div className="bg-neutral-50/70 p-4 rounded-2xl border border-neutral-100/60 text-xs text-neutral-600 text-left">
+                  <p className="text-sky-500 font-extrabold mb-1">👑 DONO MASTER (Acesso Total + Logs/Gestão):</p>
+                  <p className="text-[11px] font-medium leading-relaxed">E-mail: <span className="font-mono bg-white border border-neutral-200 px-1.5 py-0.5 rounded text-neutral-900 font-bold select-all">master@grajafood.com</span></p>
+                  <p className="text-[11px] font-medium mt-1">Senha: <span className="font-mono bg-white border border-neutral-200 px-1.5 py-0.5 rounded text-neutral-900 font-bold select-all">master123</span></p>
+                </div>
+                
+                <div className="bg-neutral-50/70 p-4 rounded-2xl border border-neutral-100/60 text-[10px] text-neutral-500 leading-relaxed font-semibold text-left">
+                  <p className="text-neutral-950 font-extrabold mb-1">🍔 CRIAR CONTAS DE DEMO DINÂMICAS:</p>
+                  <p className="font-medium text-neutral-400 mb-2">Para criar outros tipos de conta, registre-se na aba "Cadastro" com um e-mail contendo uma destas palavras-chave:</p>
+                  <ul className="list-disc list-inside space-y-1 text-neutral-700 font-bold">
+                    <li>Contendo <span className="text-sky-500">"admin"</span> (ex: <span className="font-mono text-neutral-800 bg-white px-1 border border-neutral-200 rounded">admin@teste.com</span>) → Administrador</li>
+                    <li>Contendo <span className="text-sky-500">"moto"</span> (ex: <span className="font-mono text-neutral-800 bg-white px-1 border border-neutral-200 rounded">moto@teste.com</span>) → Entregador/Motoboy</li>
+                    <li>Contendo <span className="text-sky-500">"rest"</span> (ex: <span className="font-mono text-neutral-800 bg-white px-1 border border-neutral-200 rounded">rest@teste.com</span>) → Restaurante</li>
+                    <li>Outros (ex: <span className="font-mono text-neutral-800 bg-white px-1 border border-neutral-200 rounded">comum@teste.com</span>) → Cliente comum</li>
+                  </ul>
+                </div>
+              </div>
+            </div>
+          </motion.div>
+        )}
+
+        {/* --- GOOGLE DRIVE VIEW --- */}
+        {view === 'drive' && user && (
+          <motion.div key="drive" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }}>
+            <DriveIntegration 
+              user={user} 
+              onBack={() => setView('profile')} 
+              orders={orders}
+              addresses={addresses}
+              stats={stats}
+              logsList={logsList}
+            />
           </motion.div>
         )}
       </AnimatePresence>
 
       {/* Tab Navigation (Mobile) */}
+      {user && (
       <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-neutral-100 px-8 py-5 flex justify-between items-center z-50 rounded-t-[3rem] shadow-2xl">
         {user?.tipo === 'entregador' ? (
           <>
@@ -1009,11 +1183,140 @@ export default function App() {
           </>
         )}
       </nav>
+      )}
 
       <AnimatePresence>
         {showToast && (
           <motion.div initial={{ y: 100, x: '-50%', opacity: 0 }} animate={{ y: -120, x: '-50%', opacity: 1 }} exit={{ y: 100, x: '-50%', opacity: 0 }} className="fixed bottom-0 left-1/2 z-[100] bg-neutral-900 border border-white/10 text-white px-8 py-4 rounded-[2rem] font-black uppercase tracking-widest text-[10px] shadow-2xl flex items-center gap-3">
-             <CheckCircle2 className="w-4 h-4 text-sky-500" /> Item na sacola
+              <CheckCircle2 className="w-4 h-4 text-sky-500" /> Item na sacola
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* Floating AI Chatbot Toggle Button */}
+      <AnimatePresence>
+        {!showChatbot && (
+          <motion.button 
+            id="chatbot-trigger-btn"
+            onClick={() => setShowChatbot(true)}
+            initial={{ scale: 0, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            exit={{ scale: 0, opacity: 0 }}
+            whileHover={{ scale: 1.1 }}
+            whileTap={{ scale: 0.95 }}
+            className="fixed bottom-24 right-6 md:bottom-8 md:right-8 z-[150] bg-sky-500 hover:bg-neutral-900 text-white w-14 h-14 rounded-full shadow-2xl shadow-sky-500/30 flex items-center justify-center border-2 border-white cursor-pointer transition-colors duration-300"
+          >
+            <Bot className="w-7 h-7" />
+          </motion.button>
+        )}
+      </AnimatePresence>
+
+      {/* Floating Chatbot Modal */}
+      <AnimatePresence>
+        {showChatbot && (
+          <motion.div 
+            id="chatbot-modal"
+            initial={{ opacity: 0, y: 50, scale: 0.9 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 50, scale: 0.9 }}
+            className="fixed bottom-24 right-4 md:bottom-8 md:right-8 z-[160] w-[380px] max-w-[calc(100vw-2rem)] h-[550px] max-h-[80vh] bg-white border border-neutral-100 rounded-[3rem] shadow-[0_25px_60px_-15px_rgba(0,0,0,0.15)] flex flex-col overflow-hidden"
+          >
+            {/* Header */}
+            <div className="bg-neutral-900 text-white p-6 pb-5 flex items-center justify-between">
+               <div className="flex items-center gap-3">
+                  <div className="bg-sky-500 p-2.5 rounded-2xl">
+                     <Sparkles className="w-5 h-5 text-white" />
+                  </div>
+                  <div className="text-left">
+                     <h4 className="text-xs font-black uppercase tracking-wider italic leading-none mb-1">AGENTE DE IA</h4>
+                     <div className="flex items-center gap-1.5 label">
+                        <span className="w-1.5 h-1.5 bg-green-500 rounded-full animate-ping" />
+                        <span className="text-[8px] font-black uppercase text-neutral-400 tracking-widest">100% ÍNTEGRO & ONLINE</span>
+                     </div>
+                  </div>
+               </div>
+               <button 
+                 onClick={() => setShowChatbot(false)}
+                 className="p-1.5 bg-white/10 hover:bg-white/20 rounded-xl transition-all cursor-pointer border-none outline-none"
+               >
+                  <X className="w-4 h-4 text-white" />
+               </button>
+            </div>
+
+            {/* Message Stream */}
+            <div className="flex-1 overflow-y-auto p-6 space-y-4 bg-neutral-50/50">
+               {chatbotMessages.map((msg, idx) => (
+                 <div 
+                   key={idx} 
+                   className={`flex ${msg.sender === 'user' ? 'justify-end' : 'justify-start'}`}
+                 >
+                    <div 
+                      className={`max-w-[85%] p-4 rounded-3xl text-xs font-semibold leading-relaxed shadow-sm text-left ${
+                        msg.sender === 'user' 
+                          ? 'bg-sky-500 text-white rounded-br-none' 
+                          : 'bg-white border border-neutral-100 text-neutral-800 rounded-bl-none'
+                      }`}
+                    >
+                      <p className="whitespace-pre-line">{msg.text}</p>
+                    </div>
+                 </div>
+               ))}
+               
+               {chatbotLoading && (
+                 <div className="flex justify-start">
+                    <div className="max-w-[85%] p-4 bg-white border border-neutral-100 text-neutral-400 rounded-3xl rounded-bl-none shadow-sm flex items-center gap-1">
+                       <span className="w-1.5 h-1.5 bg-sky-500 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+                       <span className="w-1.5 h-1.5 bg-sky-500 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+                       <span className="w-1.5 h-1.5 bg-sky-500 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
+                    </div>
+                 </div>
+               )}
+            </div>
+
+            {/* Shortcut prompt buttons */}
+            <div className="px-6 py-3 border-t border-neutral-100 bg-white flex flex-wrap gap-2 justify-start">
+               <button 
+                 onClick={() => sendChatbotMessage('O motoboy vai ter um app separado de entregas?')}
+                 className="px-3.5 py-1.5 bg-neutral-50 hover:bg-neutral-100 rounded-full text-[8px] font-black text-neutral-500 hover:text-neutral-900 uppercase tracking-widest transition-all cursor-pointer border-none"
+               >
+                  📱 APP ENTREGADOR
+               </button>
+               <button 
+                 onClick={() => sendChatbotMessage('Qual é o valor da taxa de entrega?')}
+                 className="px-3.5 py-1.5 bg-neutral-50 hover:bg-neutral-100 rounded-full text-[8px] font-black text-neutral-500 hover:text-neutral-900 uppercase tracking-widest transition-all cursor-pointer border-none"
+               >
+                  🏍️ TAXA DE ENTREGA
+               </button>
+               <button 
+                 onClick={() => sendChatbotMessage('Quais restaurantes atendem no GrajaFood?')}
+                 className="px-3.5 py-1.5 bg-neutral-50 hover:bg-neutral-100 rounded-full text-[8px] font-black text-neutral-500 hover:text-neutral-900 uppercase tracking-widest transition-all cursor-pointer border-none"
+               >
+                  🍔 PARCEIROS
+               </button>
+            </div>
+
+            {/* Input Form Area */}
+            <div className="p-4 border-t border-neutral-100 bg-white flex gap-2 items-center">
+               <input 
+                 type="text" 
+                 placeholder="Como posso te ajudar, parceiro?..." 
+                 value={chatbotInput}
+                 onChange={(e) => setChatbotInput(e.target.value)}
+                 onKeyDown={(e) => { if (e.key === 'Enter') sendChatbotMessage(); }}
+                 className="flex-1 p-3.5 bg-neutral-50 border-none rounded-2xl text-xs font-bold outline-none focus:ring-1 focus:ring-sky-500 text-neutral-800"
+               />
+               <button 
+                 onClick={() => sendChatbotMessage()}
+                 disabled={!chatbotInput.trim() || chatbotLoading}
+                 className={`p-3.5 rounded-2xl shadow-md transition-all flex items-center justify-center cursor-pointer border-none ${
+                   chatbotInput.trim() && !chatbotLoading 
+                     ? 'bg-sky-500 text-white shadow-sky-500/20 hover:scale-105' 
+                     : 'bg-neutral-100 text-neutral-400 cursor-not-allowed'
+                 }`}
+               >
+                  <Send className="w-4 h-4" />
+               </button>
+            </div>
           </motion.div>
         )}
       </AnimatePresence>

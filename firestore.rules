@@ -1,0 +1,185 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Global Safety Net (Pillar 1)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Hardened Global Helpers (Pillar 3 & Section 3 Helpers) ---
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+    
+    function incoming() {
+      return request.resource.data;
+    }
+    
+    function existing() {
+      return resource.data;
+    }
+    
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function getUserTipo() {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid)) 
+        ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.tipo 
+        : 'cliente';
+    }
+
+    function hasRole(role) {
+      return isSignedIn() && getUserTipo() == role;
+    }
+
+    function isDonoMaster() {
+      return hasRole('dono_master');
+    }
+
+    function isAdmin() {
+      return hasRole('admin') || isDonoMaster();
+    }
+
+    function isEntregador() {
+      return hasRole('entregador');
+    }
+
+    function isRestaurante() {
+      return hasRole('restaurante');
+    }
+
+    // --- Validation Blueprints (Pillar 2 / Anti-Update-Gap) ---
+    
+    function isValidUser(data) {
+      return data.keys().hasAll(['id', 'nome', 'email', 'tipo', 'ativo'])
+        && data.keys().size() <= 8
+        && data.id is string && data.id.size() <= 128
+        && data.nome is string && data.nome.size() >= 2 && data.nome.size() <= 100
+        && data.email is string && data.email.size() <= 150
+        && data.tipo is string && (data.tipo == 'dono_master' || data.tipo == 'admin' || data.tipo == 'operador' || data.tipo == 'financeiro' || data.tipo == 'suporte' || data.tipo == 'restaurante' || data.tipo == 'entregador' || data.tipo == 'cliente')
+        && data.ativo is bool;
+    }
+
+    function isValidAddress(data) {
+      return data.keys().hasAll(['id', 'usuario_id', 'logradouro', 'numero', 'bairro', 'principal'])
+        && data.keys().size() <= 7
+        && data.id is string && data.id.size() <= 128
+        && data.usuario_id is string && data.usuario_id.size() <= 128
+        && data.logradouro is string && data.logradouro.size() <= 200
+        && data.numero is string && data.numero.size() <= 20
+        && data.bairro is string && data.bairro.size() <= 100
+        && data.principal is bool;
+    }
+
+    function isValidRestaurant(data) {
+      return data.keys().hasAll(['id', 'nome', 'categoria', 'pedido_minimo', 'tempo_preparo'])
+        && data.id is string && data.id.size() <= 128
+        && data.nome is string && data.nome.size() <= 150
+        && data.categoria is string && data.categoria.size() <= 150;
+    }
+
+    function isValidProduct(data) {
+      return data.keys().hasAll(['id', 'restaurante_id', 'nome', 'preco', 'categoria'])
+        && data.id is string && data.id.size() <= 128
+        && data.restaurante_id is string && data.restaurante_id.size() <= 128
+        && data.nome is string && data.nome.size() <= 150
+        && data.preco is number
+        && data.categoria is string && data.categoria.size() <= 100;
+    }
+
+    function isValidOrder(data) {
+      return data.keys().hasAll(['id', 'usuario_id', 'restaurante_id', 'itens', 'endereco', 'subtotal', 'taxa', 'total', 'status', 'criado_em'])
+        && data.id is string && data.id.size() <= 128
+        && data.usuario_id is string && data.usuario_id.size() <= 128
+        && data.restaurante_id is string && data.restaurante_id.size() <= 128
+        && data.itens is list && data.itens.size() <= 50
+        && data.endereco is string && data.endereco.size() <= 300
+        && data.subtotal is number
+        && data.taxa is number
+        && data.total is number
+        && data.status is string && (data.status == 'recebido' || data.status == 'preparando' || data.status == 'saiu_para_entrega' || data.status == 'entregue' || data.status == 'cancelado')
+        && data.criado_em is string;
+    }
+
+    // --- Path Definitions and Operations Enforcements ---
+
+    match /users/{userId} {
+      allow get: if isSignedIn() && (request.auth.uid == userId || isAdmin() || isEntregador());
+      allow list: if isAdmin();
+      
+      allow create: if isSignedIn() 
+        && request.auth.uid == userId 
+        && isValidUser(incoming()) 
+        && (incoming().tipo == 'cliente' || incoming().tipo == 'entregador' || isDonoMaster());
+        
+      allow update: if isSignedIn() && (
+        (request.auth.uid == userId && isValidUser(incoming()) && incoming().diff(existing()).affectedKeys().hasOnly(['nome', 'telefone', 'ativo']))
+        || isDonoMaster()
+      );
+      
+      allow delete: if isDonoMaster();
+
+      // Sub-collection of user saved addresses
+      match /addresses/{addressId} {
+        allow read: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+        allow create, update: if isSignedIn() && request.auth.uid == userId && isValidAddress(incoming()) && incoming().usuario_id == request.auth.uid;
+        allow delete: if isSignedIn() && request.auth.uid == userId;
+      }
+    }
+
+    match /restaurants/{restaurantId} {
+      allow read: if true;
+      allow write: if isAdmin();
+
+      // Nested sub-collection of products
+      match /products/{productId} {
+        allow read: if true;
+        allow write: if isAdmin() || isRestaurante();
+      }
+    }
+
+    match /orders/{orderId} {
+      // Secure List Queries (Pillar 8)
+      allow read: if isSignedIn() && (
+        resource.data.usuario_id == request.auth.uid 
+        || isAdmin() 
+        || isEntregador() 
+        || isRestaurante()
+      );
+      
+      allow create: if isSignedIn() 
+        && isValidOrder(incoming()) 
+        && incoming().usuario_id == request.auth.uid
+        && incoming().status == 'recebido';
+        
+      allow update: if isSignedIn() && isValidOrder(incoming()) && (
+        isDonoMaster() ||
+        // Preventing Terminal State override (Pillar 6 Locking)
+        (resource.data.status != 'entregue' && resource.data.status != 'cancelado' && (
+          // Action Change Status (Tiers Pattern - Pillar 4)
+          (isEntregador() && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'atualizado_em'])) ||
+          (isRestaurante() && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'atualizado_em'])) ||
+          (isAdmin() && incoming().diff(existing()).affectedKeys().hasAll([]))
+        ))
+      );
+      
+      allow delete: if isDonoMaster();
+    }
+
+    match /invites/{token} {
+      allow get: if true; // anyone can get a single invite to register
+      allow list, write: if isDonoMaster();
+    }
+
+    match /logs/{logId} {
+      allow read: if isAdmin();
+      // append-only (No updates, no deletes allowed)
+      allow create: if isSignedIn() 
+        && incoming().keys().hasAll(['id', 'usuario_id', 'acao', 'detalhes', 'timestamp'])
+        && incoming().usuario_id == request.auth.uid;
+      allow update, delete: if false;
+    }
+  }
+}
